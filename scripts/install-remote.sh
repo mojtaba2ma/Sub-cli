@@ -32,4 +32,14 @@ DIR="$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -1)"
 [ -n "$DIR" ] && [ -f "$DIR/install.sh" ] || { echo "unexpected archive layout" >&2; exit 1; }
 
 cd "$DIR"
-bash install.sh "$@"
+
+# `curl | bash` runs this script from the pipe, so install.sh would inherit a
+# non-interactive stdin and could not ask anything. Re-attach the terminal.
+if [ -t 0 ]; then
+  bash install.sh "$@"
+elif [ -r /dev/tty ]; then
+  bash install.sh "$@" </dev/tty
+else
+  echo "note: no terminal found - running unattended (pass --domain your.domain)" >&2
+  bash install.sh "$@"
+fi

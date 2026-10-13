@@ -36,18 +36,26 @@ YAML profile) with the correct ECH block.
 curl -fsSL https://raw.githubusercontent.com/mojtaba2ma/Sub-cli/main/scripts/install-remote.sh | sudo bash
 ```
 
-The installer:
+The installer (a same-terminal wizard):
 
 1. detects your panel (`http://127.0.0.1:2096`) and asks for its subscription path,
-2. generates a random **secret** and shows it at the end (save it!),
-3. builds/installs the Go binary (no runtime dependencies) and a hardened systemd unit,
-4. prints a ready-made `location /sb/` block for nginx and saves it to `<prefix>/nginx-location.conf`
+2. **asks for your public domain** — this one is **required and has no default**, because every URL it
+   prints must use the domain that actually reaches your server (it never guesses from the server hostname),
+3. asks for the **URL path** (default `/sb/`, press Enter to accept) and the **ports**: the local service
+   port (default `2199`, bound to 127.0.0.1 only) and the public port used in URLs (default `443` — keep it
+   if you are behind Cloudflare). All of them can be changed.
+4. generates a random **secret** and shows it at the end (save it!),
+5. builds/installs the Go binary (no runtime dependencies) and a hardened systemd unit,
+6. prints a ready-made `location <path>/` block for nginx and saves it to `<prefix>/nginx-location.conf`
    — **it never edits your nginx config** (use `--auto-nginx` if you explicitly want that),
-5. runs an ECH health check and prints ready-to-use subscription URLs.
+7. runs an ECH health check and prints ready-to-use subscription URLs (also saved to `<prefix>/urls.txt`).
 
-Interactive flags: `--panel URL`, `--sub-path /sub`, `--domain panel.example.com`, `--port 2199`,
-`--no-systemd`, `--bin-source auto|build|release|local`, `--yes`, `--uninstall`,
-and the opt-in `--auto-nginx` (off by default).
+Flags: `--panel URL`, `--sub-path /sub`, `--domain panel.example.com` (**mandatory with `--yes`**),
+`--path /sb`, `--port 2199`, `--public-port 443`, `--new-secret` (by default an existing secret is kept,
+so current user links keep working), `--no-systemd`, `--bin-source auto|build|release|local`, `--yes`,
+`--uninstall`, and the opt-in `--auto-nginx` (off by default).
+
+> Unattended example: `curl ... | sudo bash -s -- --domain panel.example.com --yes`
 
 ### The one manual step: nginx
 

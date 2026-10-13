@@ -38,23 +38,35 @@ cloudflare-ech.com+https://8.8.8.8/dns-query
 curl -fsSL https://raw.githubusercontent.com/mojtaba2ma/Sub-cli/main/scripts/install-remote.sh | sudo bash
 ```
 
-نصاب تعاملی:
+نصاب تعاملی (همه چیز را در همان ترمینال می‌پرسد):
 
 1. خودش پنل را روی `127.0.0.1:2096` پیدا می‌کند و مسیر ساب را می‌پرسد (`/sub` پیش‌فرض؛ در پنل: Settings → Subscription → subPath)
-2. یک **secret تصادفی** می‌سازد و در پایان نشان می‌دهد (ذخیره کنید!)
-3. باینری Go را می‌سازد/نصب می‌کند (اگر Go نبود، خودش toolchain را دانلود می‌کند) + سرویس systemd
-4. **به nginx دست نمی‌زند** (پنل nginx شما دست‌نخورده می‌ماند): بلوک آمادهٔ `location /sb/` را
+2. **دامنهٔ عمومی را می‌پرسد** — این ورودی **پیش‌فرض ندارد و اجباری است**، چون آدرس‌هایی که
+   چاپ می‌شوند باید با همان دامنه‌ای ساخته شوند که واقعاً به سرور می‌رسد (هرگز از hostname سرور حدس زده نمی‌شود)
+3. **مسیر URL** (پیش‌فرض `/sb/`، Enter = قبول) و **پورت‌ها** را می‌پرسد: پورت محلی سرویس
+   (پیش‌فرض `2199`، فقط روی 127.0.0.1) و پورت عمومی در URL (پیش‌فرض `443`؛ اگر پشت کلودفلر
+   هستید همان Enter را بزنید) — همه را می‌توانید عوض کنید
+4. یک **secret تصادفی** می‌سازد و در پایان نشان می‌دهد (ذخیره کنید!)
+5. باینری Go را می‌سازد/نصب می‌کند (اگر Go نبود، خودش toolchain را دانلود می‌کند) + سرویس systemd
+6. **به nginx دست نمی‌زند** (پنل nginx شما دست‌نخورده می‌ماند): بلوک آمادهٔ `location <مسیر>/` را
    چاپ می‌کند و در فایل `<prefix>/nginx-location.conf` هم ذخیره می‌کند تا خودتان آن را در
    server block دامنهٔ پنل بگذارید
-5. health check می‌زند و آدرس‌های آمادهٔ ساب را چاپ می‌کند
+7. health check می‌زند و آدرس‌های آمادهٔ ساب را چاپ می‌کند (در `<prefix>/urls.txt` هم ذخیره می‌شوند)
 
 گزینه‌های نصاب:
 
 ```bash
 sudo bash install.sh --panel http://127.0.0.1:2096 --sub-path /sub --domain panel.example.com
-#   --no-systemd   --port 2199   --bin-source auto|build|release|local   --yes   --uninstall
+#   --path /sb            مسیر URL (پیش‌فرض /sb)
+#   --port 2199           پورت محلی سرویس (پیش‌فرض 2199)
+#   --public-port 443     پورتی که در URLها می‌آید (پیش‌فرض 443؛ اگر پورت را در URL نمی‌خواهید خالی بگذارید)
+#   --new-secret          ساخت secret جدید (پیش‌فرض: secret فعلی حفظ می‌شود تا لینک‌های فعلی کاربران نشکند)
+#   --no-systemd   --bin-source auto|build|release|local   --yes   --uninstall
 #   --auto-nginx   (اختیاری و پیش‌فرض خاموش: اگر خودتان بخواهید، nginx را خودکار ویرایش می‌کند)
 ```
+
+> در حالت غیرتعاملی (`--yes` برای اسکریپت/نصب خودکار) **باید `--domain` را بدهید**، وگرنه نصاب
+> با پیام خطا خارج می‌شود. مثال: `curl ... | sudo bash -s -- --domain panel.example.com --yes`
 
 ### یک قدم دستی: nginx
 
@@ -105,7 +117,7 @@ sudo bash /opt/sb-ech-gateway/install.sh --uninstall   # حذف کامل
 ## ۳) آدرس‌هایی که به کاربران می‌دهید
 
 ```
-https://<دامنهٔ پنل>/sb/<SECRET>/auto/<SUBID>    ← ★ یک لینک برای همه (تشخیص با User-Agent)
+https://<دامنهٔ عمومی که در نصب دادید>/<مسیر>/<SECRET>/auto/<SUBID>   ← ★ یک لینک برای همه (تشخیص با User-Agent؛ مثال با پیش‌فرض‌ها: https://panel.example.com/sb/SECRET/auto/SUBID)
 https://<دامنهٔ پنل>/sb/<SECRET>/sub/<SUBID>     ← sing-box، پویا (query_server_name)
 https://<دامنهٔ پنل>/sb/<SECRET>/subs/<SUBID>    ← sing-box، استاتیک PEM (برای Hiddify)
 https://<دامنهٔ پنل>/sb/<SECRET>/clash/<SUBID>   ← Clash/Mihomo با ech-opts

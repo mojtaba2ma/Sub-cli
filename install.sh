@@ -15,13 +15,18 @@ PREFIX="/opt/sb-ech-gateway"
 PORT="2199"
 PANEL_BASE=""
 SUB_PATH="/sub"
+SUB_PATH_SET=0
 PANEL_UA="v2rayNG/1.9.44"
-PUBLIC_DOMAIN=""
-AUTO_NGINX=0     # 0 = only print the nginx block (never touch your nginx)
+PUBLIC_DOMAIN=""     # REQUIRED - no default, always asked
+PUBLIC_PORT=""       # optional, default 443 (https) - printed in the URLs
+BASE_PATH="/sb"      # public path of the gateway (also its base_path)
+BASE_PATH_SET=0
+AUTO_NGINX=0         # 0 = only print the nginx block (never touch your nginx)
 DO_SYSTEMD=1
 BIN_SOURCE="auto"          # auto | build | release | local
 ASSUME_YES=0
 UNINSTALL=0
+NEW_SECRET=0
 NGINX_SNIPPET=""
 CREATED_SECRET=""
 
@@ -63,11 +68,14 @@ usage: sudo bash install.sh [options]
   --panel URL         panel base url               (default: auto-detect, else ask)
   --sub-path PATH     panel subscription path      (default: ${SUB_PATH})
   --panel-ua UA       user-agent used to fetch the panel sub (default: ${PANEL_UA})
-  --domain NAME       public domain that fronts the panel (for nginx + printed links)
+  --domain NAME       public domain that fronts the panel (REQUIRED, e.g. panel.example.com)
+  --path PATH         public path of the gateway          (default: /sb)
+  --public-port N     port your panel domain is served on (default: 443; e.g. 2096)
   --no-nginx          accepted for compatibility (nginx is never touched by default)
   --auto-nginx        let the installer edit nginx automatically (off by default)
   --no-systemd        do not install/start the systemd service
   --bin-source SRC    auto|build|release|local     (default: auto)
+  --new-secret        generate a new secret even if one is already installed
   --yes               accept defaults, no questions
   --uninstall         remove the service and installation
   -h, --help          this help
@@ -79,14 +87,17 @@ while [ $# -gt 0 ]; do
     --prefix) PREFIX="$2"; shift 2 ;;
     --port) PORT="$2"; shift 2 ;;
     --panel) PANEL_BASE="$2"; shift 2 ;;
-    --sub-path) SUB_PATH="$2"; shift 2 ;;
+    --sub-path) SUB_PATH="$2"; SUB_PATH_SET=1; shift 2 ;;
     --panel-ua) PANEL_UA="$2"; shift 2 ;;
     --domain) PUBLIC_DOMAIN="$2"; shift 2 ;;
+    --path) BASE_PATH="$2"; BASE_PATH_SET=1; shift 2 ;;
+    --public-port) PUBLIC_PORT="$2"; shift 2 ;;
     --no-nginx) shift ;;                  # default behaviour, kept for compatibility
     --auto-nginx) AUTO_NGINX=1; shift ;;
     --no-systemd) DO_SYSTEMD=0; shift ;;
     --bin-source) BIN_SOURCE="$2"; shift 2 ;;
     --yes|-y) ASSUME_YES=1; shift ;;
+    --new-secret) NEW_SECRET=1; shift ;;
     --uninstall) UNINSTALL=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown option: $1 (try --help)" ;;
@@ -96,28 +107,117 @@ done
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
   die "please run as root:  sudo bash install.sh"
 fi
-if ! [ -t 0 ] && [ "$ASSUME_YES" -ne 1 ] && [ -z "$PANEL_BASE" ]; then
-  warn "stdin is not a terminal; run with --panel URL --yes for unattended installs"
+
+# `curl ... | bash` leaves stdin on the pipe, so `read` cannot see the keyboard.
+# Re-attach the controlling terminal when there is one; otherwise fall back to a
+# fully unattended run (defaults + required --domain).
+CAN_ASK=0
+if [ -t 0 ]; then
+  CAN_ASK=1
+elif [ -r /dev/tty ] && exec 0</dev/tty 2>/dev/null; then
+  CAN_ASK=1
+fi
+if [ "$CAN_ASK" -eq 0 ]; then
+  warn "no terminal available - running unattended (defaults are used)"
+  note "the public domain is required: pass --domain your.domain  (and --yes for other defaults)"
 fi
 
 ask() { # ask <var> <question> <default>
   local __var="$1" __q="$2" __def="$3" __ans=""
-  if [ "$ASSUME_YES" -eq 1 ]; then printf -v "$__var" '%s' "$__def"; return; fi
+  if [ "$ASSUME_YES" -eq 1 ] || [ "${CAN_ASK:-0}" -eq 0 ]; then printf -v "$__var" '%s' "$__def"; return; fi
   printf '%s' "  ${C_B}?${C_R} ${__q}"
   [ -n "$__def" ] && printf ' %s' "${C_D}[${__def}]${C_R}"
   printf ': '
-  read -r __ans || true
+  if ! read -r __ans; then          # EOF (piped input ran out) - take the default
+    __ans="$__def"
+    printf '%s\n' ""
+    warn "no more input - using default: ${__def}"
+  fi
   [ -z "$__ans" ] && __ans="$__def"
   printf -v "$__var" '%s' "$__ans"
 }
 
 ask_yesno() { # ask_yesno <question> <default: y|n>
   local __q="$1" __def="$2" __ans=""
-  if [ "$ASSUME_YES" -eq 1 ]; then [ "$__def" = "y" ]; return; fi
+  if [ "$ASSUME_YES" -eq 1 ] || [ "${CAN_ASK:-0}" -eq 0 ]; then [ "$__def" = "y" ]; return; fi
   printf '%s' "  ${C_B}?${C_R} ${__q} [${__def}]: "
   read -r __ans || true
   [ -z "$__ans" ] && __ans="$__def"
   case "$__ans" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+}
+
+# ask without a default - keeps asking until something non-empty is given
+ask_required() { # ask_required <var> <question>
+  local __var="$1" __q="$2" __ans=""
+  while :; do
+    if [ "${CAN_ASK:-0}" -eq 0 ]; then
+      printf -v "$__var" '%s' ""
+      return 1
+    fi
+    printf '%s' "  ${C_B}?${C_R} ${__q}: "
+    if ! read -r __ans; then
+      err "no more input available (end of input) - pass it on the command line instead"
+      note "example:  --domain panel.example.com   (the domain has no default)"
+      return 1
+    fi
+    __ans="$(printf '%s' "$__ans" | tr -d '[:space:]')"
+    if [ -n "$__ans" ]; then printf -v "$__var" '%s' "$__ans"; return 0; fi
+    warn "this value is required and has no default"
+  done
+}
+
+# strip scheme/path from a host and split an inline :port into PUBLIC_PORT
+normalize_host() { # normalize_host <var> <host> [portvar]
+  local __var="$1" __in="$2" __portvar="${3:-}" __host __port
+  __host="$(printf '%s' "$__in" | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#/.*$##; s#^/+##; s#/+$##; s#\.$##' | tr 'A-Z' 'a-z')"
+  __port=""
+  case "$__host" in
+    *:*)  __host_no="${__host%:*}"; __port="${__host##*:}"
+          case "$__port" in ''|*[!0-9]*) __port="" ;; *) __host="$__host_no" ;; esac ;;
+  esac
+  printf -v "$__var" '%s' "$__host"
+  if [ -n "$__portvar" ] && [ -n "$__port" ]; then printf -v "$__portvar" '%s' "$__port"; fi
+}
+
+validate_host() { # validate_host <host> ; echoes a reason on failure
+  local h="$1"
+  [ -n "$h" ] || { echo "a domain is required (no default)"; return 0; }
+  case "$h" in
+    *.*) ;;
+    *) echo "that does not look like a domain (expected something like panel.example.com)"; return 0 ;;
+  esac
+  case "$h" in
+    *[!a-z0-9.-]*) echo "only letters, digits, dots and hyphens are allowed (an optional :port is ok)"; return 0 ;;
+  esac
+  case "$h" in
+    .*|*..*|*-|*.) echo "the domain looks malformed"; return 0 ;;
+  esac
+  return 1
+}
+
+validate_public_port() { # echoes a reason on failure
+  case "$1" in
+    ""|443|80) return 1 ;;
+    *[!0-9]*) echo "port must be a number"; return 0 ;;
+  esac
+  [ "$1" -ge 1 ] && [ "$1" -le 65535 ] || { echo "port must be 1-65535"; return 0; }
+  return 1
+}
+
+validate_path() { # validate_path <path> ; echo reason on failure
+  case "$1" in
+    /|"") echo "path must be at least one segment (for example /sb)" ;;
+    /*)   case "$1" in *" "*) echo "path must not contain spaces" ;; *) return 0 ;; esac ;;
+    *)    echo "path must start with /" ;;
+  esac
+}
+
+port_in_use() {
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$1\$"
+  else
+    return 1
+  fi
 }
 
 random_secret() {
@@ -180,7 +280,7 @@ if [ -z "$PANEL_BASE" ]; then
   ask PANEL_BASE "panel base URL (where your 3x-ui subscription lives)" "${PANEL_DEFAULT:-http://127.0.0.1:2096}"
 fi
 
-if [ "$ASSUME_YES" -ne 1 ]; then
+if [ "$ASSUME_YES" -ne 1 ] && [ "$CAN_ASK" -eq 1 ] && [ "$SUB_PATH_SET" -eq 0 ]; then
   note "tip: in the panel, Settings -> Subscription shows the exact sub path (subPath)."
   ask SUB_PATH "panel subscription path" "$SUB_PATH"
 fi
@@ -207,16 +307,107 @@ if command -v curl >/dev/null 2>&1; then
 fi
 
 # ---- 2. public address ---------------------------------------------------------
-say "step 2/6 - public address"
-if [ "$ASSUME_YES" -ne 1 ]; then
-  note "your nginx is never modified by this installer - a ready-made block is printed at the end."
-  ask PUBLIC_DOMAIN "public domain of your panel (used only to print your final URLs, optional)" "$PUBLIC_DOMAIN"
+say "step 2/6 - domain, path and ports"
+
+# --- domain (REQUIRED, no default) ---
+if [ -z "$PUBLIC_DOMAIN" ]; then
+  if [ "$CAN_ASK" -eq 0 ]; then
+    err "the public domain is required - run again with:  --domain panel.example.com"
+    note "the domain has no default on purpose: guessing the server hostname produced wrong URLs"
+    exit 1
+  fi
+  note "the domain your users will open - it must be the domain that actually reaches this server"
+  note "example: panel.example.com      or, if your panel answers on another port: panel.example.com:2096"
+  note "(the server hostname is NOT used any more - it produced wrong URLs)"
+  while :; do
+    ask_required PUBLIC_DOMAIN "public domain (REQUIRED, no default)" || { err "domain is required"; exit 1; }
+    normalize_host PUBLIC_DOMAIN "$PUBLIC_DOMAIN" PUBLIC_PORT
+    reason="$(validate_host "$PUBLIC_DOMAIN")" && { warn "$reason"; continue; }
+    break
+  done
+else
+  normalize_host PUBLIC_DOMAIN "$PUBLIC_DOMAIN" PUBLIC_PORT
+  reason="$(validate_host "$PUBLIC_DOMAIN")" && die "invalid --domain '${PUBLIC_DOMAIN}': ${reason}"
 fi
+
+# --- public path ---
+if [ "$CAN_ASK" -eq 1 ] && [ "$ASSUME_YES" -ne 1 ] && [ "$BASE_PATH_SET" -eq 0 ]; then
+  while :; do
+    ask BASE_PATH "public path of the gateway" "$BASE_PATH"
+    BASE_PATH="$(printf '%s' "$BASE_PATH" | tr -d '[:space:]')"
+    case "$BASE_PATH" in /*) ;; *) BASE_PATH="/$BASE_PATH" ;; esac
+    BASE_PATH="$(printf '%s' "$BASE_PATH" | sed -E 's#/+$##')"
+    reason="$(validate_path "$BASE_PATH")"
+    if [ -n "$reason" ]; then warn "$reason"; continue; fi
+    if [ "$BASE_PATH" = "${SUB_PATH%/}" ]; then
+      warn "that path is already used by your panel subscription (${SUB_PATH}) - pick another one"
+      BASE_PATH="/sb"; continue
+    fi
+    break
+  done
+fi
+case "$BASE_PATH" in /*) ;; *) BASE_PATH="/$BASE_PATH" ;; esac
+BASE_PATH="$(printf '%s' "$BASE_PATH" | sed -E 's#/+$##')"
+
+# --- local listening port ---
+if [ "$CAN_ASK" -eq 1 ] && [ "$ASSUME_YES" -ne 1 ]; then
+  if port_in_use "$PORT"; then
+    for cand in 2200 2201 2202 2203 2204 2300 2400; do
+      port_in_use "$cand" || { note "port ${PORT} is already in use"; PORT="$cand"; break; }
+    done
+  fi
+  while :; do
+    ask PORT "local port of the gateway (127.0.0.1 only)" "$PORT"
+    case "$PORT" in ''|*[!0-9]*) warn "enter a number"; continue ;; esac
+    [ "$PORT" -ge 1 ] && [ "$PORT" -le 65535 ] || { warn "port must be 1-65535"; continue; }
+    port_in_use "$PORT" && { warn "port ${PORT} is already in use on this server"; continue; }
+    break
+  done
+fi
+
+# --- public port (for the printed URLs) ---
+if [ "$ASSUME_YES" -ne 1 ] && [ "$CAN_ASK" -eq 1 ]; then
+  note "the port your panel domain answers on. Leave empty for the default (443, no port in the URL)."
+  note "if your panel subscription is served on another port (e.g. the 3x-ui default 2096), give it here."
+  while :; do
+    ask PUBLIC_PORT "public port used in the URLs (empty = 443)" "$PUBLIC_PORT"
+    reason="$(validate_public_port "$PUBLIC_PORT")" && { warn "$reason"; continue; }
+    case "$PUBLIC_PORT" in ""|443) PUBLIC_PORT="" ;; esac
+    break
+  done
+fi
+if [ -n "$PUBLIC_PORT" ]; then
+  reason="$(validate_public_port "$PUBLIC_PORT")" && die "invalid --public-port '${PUBLIC_PORT}': ${reason}"
+fi
+case "$PUBLIC_PORT" in 443) PUBLIC_PORT="" ;; esac
+
+if [ -n "$PUBLIC_PORT" ] && [ "$PUBLIC_PORT" != "80" ] && [ -n "$AUTO_NGINX" ] && [ "$AUTO_NGINX" -eq 1 ]; then
+  note "note: --auto-nginx will create a server block listening on ${PUBLIC_PORT}"
+fi
+
+ok "domain: ${PUBLIC_DOMAIN}"
+ok "path:   ${BASE_PATH}"
+ok "local port: ${PORT}   (only 127.0.0.1)"
+if [ -n "$PUBLIC_PORT" ]; then ok "public URLs: https://${PUBLIC_DOMAIN}:${PUBLIC_PORT}${BASE_PATH}/...";
+else ok "public URLs: https://${PUBLIC_DOMAIN}${BASE_PATH}/..."; fi
 
 # ---- 3. secret -----------------------------------------------------------------
 say "step 3/6 - secret"
-CREATED_SECRET="$(random_secret)"
-ok "generated a random secret (shown again at the end)"
+EXISTING_SECRET=""
+SECRET_SOURCE="$PREFIX/config.json"
+if [ -f "$PREFIX/config.json" ]; then
+  EXISTING_SECRET="$(grep -o '"secret"[^,]*' "$PREFIX/config.json" | head -1 | cut -d'"' -f4)"
+elif [ -f "$PREFIX/sb-ech-gateway" ] || [ -f "$PREFIX/urls.txt" ]; then
+  EXISTING_SECRET=""
+fi
+if [ "$NEW_SECRET" -eq 0 ] && [ -n "$EXISTING_SECRET" ] && [ "$EXISTING_SECRET" != "CHANGE-ME-to-a-long-random-string" ]; then
+  CREATED_SECRET="$EXISTING_SECRET"
+  ok "keeping the existing secret (your current subscription URLs stay valid)"
+  note "use --new-secret if you really want to rotate it (users would have to re-import the URLs)"
+else
+  CREATED_SECRET="$(random_secret)"
+  ok "generated a random secret (shown again at the end)"
+fi
 note "the secret is part of every subscription URL - keep the URLs private"
 
 # ---- 4. install the binary -----------------------------------------------------
@@ -248,7 +439,7 @@ build_with_go() {
   mkdir -p "$cache"
   # keep both the module cache and go's scratch space out of a possibly tiny /tmp
   ( cd "$SRC_DIR" && TMPDIR="$cache" GOCACHE="$cache/cache" GOPATH="$cache/gopath" \
-      "$gobin" build -trimpath -ldflags "-s -w" -o "$BIN" . )
+      "$gobin" build -trimpath -ldflags "-s -w" -o "$BIN.new" . ) && mv -f "$BIN.new" "$BIN"
   local rc=$?
   case "$cache" in "$PREFIX/.gocache") : ;; *) rm -rf "$cache" ;; esac
   [ $rc -eq 0 ] || return 1
@@ -261,8 +452,9 @@ download_release() {
   arch="$(uname -m)"
   case "$arch" in x86_64|amd64) asset=sb-ech-gateway-linux-amd64 ;; aarch64|arm64) asset=sb-ech-gateway-linux-arm64 ;; *) return 1 ;; esac
   url="https://github.com/${GITHUB_REPO}/releases/latest/download/${asset}"
-  curl -fsSL "$url" -o "$BIN" || return 1
-  chmod +x "$BIN"
+  curl -fsSL "$url" -o "$BIN.new" || { rm -f "$BIN.new"; return 1; }
+  chmod +x "$BIN.new"
+  mv -f "$BIN.new" "$BIN" || return 1
   ok "downloaded the prebuilt binary"
   return 0
 }
@@ -302,7 +494,7 @@ cat > "$PREFIX/config.json" <<EOF
 {
   "listen": "127.0.0.1",
   "port": ${PORT},
-  "base_path": "/sb",
+  "base_path": "${BASE_PATH}",
   "secret": "${CREATED_SECRET}",
 
   "panel": {
@@ -393,7 +585,8 @@ case "${1:-url}" in
     if [ -f "$PREFIX/urls.txt" ]; then
       cat "$PREFIX/urls.txt"
     else
-      echo "local:  http://127.0.0.1:${PORT}/sb/${SECRET}/auto/<SUBID>"
+      BP="$(grep -o '"base_path"[^,]*' "$CONF" | cut -d'"' -f4)"
+      echo "local:  http://127.0.0.1:${PORT}${BP}/${SECRET}/auto/<SUBID>"
       echo "secret: ${SECRET}"
     fi
     ;;
@@ -401,7 +594,12 @@ case "${1:-url}" in
   status) systemctl --no-pager -l status sb-ech-gateway | head -20 ;;
   logs) journalctl -u sb-ech-gateway -n 60 --no-pager ;;
   restart) systemctl restart sb-ech-gateway && echo restarted ;;
-  health) curl -s "http://127.0.0.1:$(grep -o '"port"[^,]*' "$CONF" | cut -d: -f2 | tr -d ' ,')/sb/$(grep -o '"secret"[^,]*' "$CONF" | cut -d'"' -f4)/health" ;;
+  health)
+    HP="$(grep -o '"port"[^,]*' "$CONF" | cut -d: -f2 | tr -d ' ,')"
+    HB="$(grep -o '"base_path"[^,]*' "$CONF" | cut -d'"' -f4)"
+    HS="$(grep -o '"secret"[^,]*' "$CONF" | cut -d'"' -f4)"
+    curl -s "http://127.0.0.1:${HP}${HB}/${HS}/health"
+    ;;
   edit) ${EDITOR:-nano} "$CONF" && systemctl restart sb-ech-gateway ;;
   update) bash -c 'curl -fsSL https://raw.githubusercontent.com/__REPO__/main/scripts/update.sh | bash' ;;
   *) echo "usage: sb-ech [url|secret|status|logs|restart|health|edit|update]"; ;;
@@ -435,7 +633,7 @@ else
   warn "skipping systemd (--no-systemd); start manually: ${BIN} --config ${PREFIX}/config.json"
 fi
 
-HEALTH="$(curl -fsS -m 8 "http://127.0.0.1:${PORT}/sb/${CREATED_SECRET}/health" 2>/dev/null || true)"
+HEALTH="$(curl -fsS -m 8 "http://127.0.0.1:${PORT}${BASE_PATH}/${CREATED_SECRET}/health" 2>/dev/null || true)"
 if printf '%s' "$HEALTH" | grep -q '"ok": true'; then
   ok "health check passed (live Cloudflare ECH config fetched)"
 else
@@ -453,7 +651,7 @@ NGINX_BLOCK="$PREFIX/nginx-location.conf"
   echo "# 'listen 443 ssl'), next to your existing location blocks."
   echo "# Then: nginx -t && systemctl reload nginx"
   cat <<'LOC'
-location /sb/ {
+location __PATH__/ {
     proxy_pass http://127.0.0.1:__PORT__;
     proxy_http_version 1.1;
     proxy_set_header Host $host;
@@ -466,17 +664,18 @@ location /sb/ {
 }
 LOC
 } > "$NGINX_BLOCK"
-sed -i "s|__PORT__|${PORT}|" "$NGINX_BLOCK"
+sed -i "s|__PORT__|${PORT}|; s|__PATH__|${BASE_PATH}|" "$NGINX_BLOCK"
 ok "saved the ready-made block to ${NGINX_BLOCK}"
 
 if [ "$AUTO_NGINX" -eq 1 ] && command -v nginx >/dev/null 2>&1; then
   warn "--auto-nginx given: editing nginx automatically (off by default)"
   NGINX_CONF_FILE="/etc/nginx/conf.d/sb-ech-gateway.conf"
-  SERVER_NAME="${PUBLIC_DOMAIN:-_}"
+  SERVER_NAME="${PUBLIC_DOMAIN}"
+  AUTOPORT="${PUBLIC_PORT:-80}"
   {
     echo "server {"
-    echo "    listen 80;"
-    echo "    listen [::]:80;"
+    echo "    listen ${AUTOPORT};"
+    echo "    listen [::]:${AUTOPORT};"
     echo "    server_name ${SERVER_NAME};"
     sed 's/^/    /' "$NGINX_BLOCK" | grep -v '^    #'
     echo "}"
@@ -509,17 +708,16 @@ else
 fi
 
 # ---- summary --------------------------------------------------------------------
-SCHEME="https"; PORT_PART=""
-if [ -n "$PUBLIC_DOMAIN" ]; then
-  HOST="$PUBLIC_DOMAIN"
-else
-  HOST="$(hostname -f 2>/dev/null || hostname)"; SCHEME="http"; PORT_PART=":${PORT}"
-fi
-BASE="${SCHEME}://${HOST}${PORT_PART}/sb/${CREATED_SECRET}"
-LOCAL_BASE="http://127.0.0.1:${PORT}/sb/${CREATED_SECRET}"
+SCHEME="http"; [ "${PUBLIC_PORT:-443}" != "80" ] && SCHEME="https"
+if [ -n "$PUBLIC_PORT" ]; then PORT_PART=":${PUBLIC_PORT}"; else PORT_PART=""; fi
+BASE="${SCHEME}://${PUBLIC_DOMAIN}${PORT_PART}${BASE_PATH}/${CREATED_SECRET}"
+LOCAL_BASE="http://127.0.0.1:${PORT}${BASE_PATH}/${CREATED_SECRET}"
 
 cat > "$PREFIX/urls.txt" <<EOF
 secret: ${CREATED_SECRET}
+domain: ${PUBLIC_DOMAIN}${PORT_PART}
+path:   ${BASE_PATH}
+
 public URLs (use them after you add the nginx block):
   ${BASE}/auto/<SUBID>
   ${BASE}/sub/<SUBID>
@@ -527,7 +725,8 @@ public URLs (use them after you add the nginx block):
   ${BASE}/clash/<SUBID>
   ${BASE}/xray/<SUBID>
   ${BASE}/health
-local URL (always works on the server):
+
+local URLs (always work on the server):
   ${LOCAL_BASE}/health
 EOF
 chmod 600 "$PREFIX/urls.txt"
@@ -546,16 +745,13 @@ printf '%s\n' "      ${BASE}/sub/<SUBID>      ${C_D}<- sing-box, live ECH from D
 printf '%s\n' "      ${BASE}/subs/<SUBID>     ${C_D}<- sing-box, static ECH (Hiddify)${C_R}"
 printf '%s\n' "      ${BASE}/clash/<SUBID>    ${C_D}<- Clash / Mihomo${C_R}"
 printf '%s\n' "      ${BASE}/xray/<SUBID>     ${C_D}<- raw panel links (v2rayNG & co)${C_R}"
-if [ -z "$PUBLIC_DOMAIN" ]; then
-  note "no domain was given: the URLs above use the server hostname - fix them after adding nginx"
-fi
 echo
 printf '%s\n' "  ${C_B}---------------------------------------------------------------${C_R}"
 printf '%s\n' "  ${C_B}NGINX - ONE MANUAL STEP   (your nginx was NOT touched)${C_R}"
 printf '%s\n' "  ${C_B}---------------------------------------------------------------${C_R}"
 echo
-printf '%s\n' "  Add this block inside the ${C_B}server { ... }${C_R} block that serves your panel"
-printf '%s\n' "  domain - the one with ${C_B}listen 443 ssl${C_R} - next to your existing locations:"
+printf '%s\n' "  Add this block inside the ${C_B}server { ... }${C_R} block that serves ${C_B}${PUBLIC_DOMAIN}${C_R}"
+printf '%s\n' "  (the one answering on ${C_B}${SCHEME}${PORT_PART}${C_R}), next to your existing locations:"
 echo
 sed 's/^/      /' "$NGINX_BLOCK"
 echo
@@ -567,11 +763,11 @@ printf '%s\n' "   3. test and reload:   ${C_B}nginx -t && systemctl reload nginx
 printf '%s\n' "   4. verify on the server:  ${C_B}curl -s ${LOCAL_BASE}/health${C_R}"
 printf '%s\n' "      and from outside:       ${C_B}curl -s ${BASE}/health${C_R}"
 echo
-printf '%s\n' "  ${C_D}نکته: اگر دامنهٔ پنل پشت کلودفلر است مشکلی نیست؛ ساب‌ها مثل ساب خود پنل از${C_R}"
-printf '%s\n' "  ${C_D}روی CDN خوانده می‌شوند. پورت ${PORT} فقط روی 127.0.0.1 گوش می‌دهد.${C_R}"
+printf '%s\n' "  ${C_D}نکته: اگر دامنه و مسیر یا پورت را اشتباه دادید، دوباره نصب‌کننده را اجرا کنید"
+printf '%s\n' "  ${C_D}(مقادیر قبلی حفظ می‌شود) یا: sb-ech edit  → مسیر/پورت را در config.json اصلاح و ریستارت کنید.${C_R}"
 echo
 printf '%s\n' "  ${C_B}Useful commands${C_R}:"
-printf '%s\n' "      sb-ech url        show URLs and the secret (saved in ${PREFIX}/urls.txt)"
+printf '%s\n' "      sb-ech url        show URLs, domain, path and the secret (saved in ${PREFIX}/urls.txt)"
 printf '%s\n' "      sb-ech health     ECH status + last key fetch time"
 printf '%s\n' "      sb-ech logs       service logs"
 printf '%s\n' "      sb-ech edit       edit config.json and restart"
