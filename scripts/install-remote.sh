@@ -26,8 +26,10 @@ echo "downloading ${REPO}@${BRANCH} ..."
 curl -fsSL "https://github.com/${REPO}/archive/refs/heads/${BRANCH}.tar.gz" -o "$TMP/src.tgz"
 tar xzf "$TMP/src.tgz" -C "$TMP"
 
-DIR="$(find "$TMP" -maxdepth 1 -type d -name 'sb-ech-gateway-*' | head -1)"
-[ -n "$DIR" ] || { echo "unexpected archive layout" >&2; exit 1; }
+# GitHub names the archive root "<repo>-<branch>" (e.g. Sub-cli-main), so accept any
+# single top-level directory instead of assuming the project name.
+DIR="$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -1)"
+[ -n "$DIR" ] && [ -f "$DIR/install.sh" ] || { echo "unexpected archive layout" >&2; exit 1; }
 
 cd "$DIR"
 bash install.sh "$@"

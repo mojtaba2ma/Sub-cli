@@ -21,7 +21,8 @@ TMP="$(mktemp -d /tmp/sb-ech-update.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 curl -fsSL "https://github.com/${REPO}/archive/refs/heads/${BRANCH}.tar.gz" -o "$TMP/src.tgz"
 tar xzf "$TMP/src.tgz" -C "$TMP"
-SRC="$(find "$TMP" -maxdepth 1 -type d -name 'sb-ech-gateway-*' | head -1)"
+SRC="$(find "$TMP" -mindepth 1 -maxdepth 1 -type d | head -1)"
+[ -n "$SRC" ] && [ -f "$SRC/main.go" ] || { echo "unexpected archive layout" >&2; exit 1; }
 
 GO=""
 command -v go >/dev/null 2>&1 && GO="$(command -v go)"
