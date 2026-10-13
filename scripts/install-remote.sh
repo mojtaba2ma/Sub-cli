@@ -35,11 +35,14 @@ cd "$DIR"
 
 # `curl | bash` runs this script from the pipe, so install.sh would inherit a
 # non-interactive stdin and could not ask anything. Re-attach the terminal.
+# `-r /dev/tty` only checks file permissions; a machine without a controlling
+# terminal fails to *open* it, which used to kill the run before install.sh even
+# started (and made curl exit 23 on the closed pipe). Try the open for real.
 if [ -t 0 ]; then
   bash install.sh "$@"
-elif [ -r /dev/tty ]; then
+elif { true </dev/tty; } 2>/dev/null; then
   bash install.sh "$@" </dev/tty
 else
-  echo "note: no terminal found - running unattended (pass --domain your.domain)" >&2
+  echo "note: no terminal found - running unattended, so --domain is required" >&2
   bash install.sh "$@"
 fi

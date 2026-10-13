@@ -114,7 +114,10 @@ fi
 CAN_ASK=0
 if [ -t 0 ]; then
   CAN_ASK=1
-elif [ -r /dev/tty ] && exec 0</dev/tty 2>/dev/null; then
+# `-r /dev/tty` only checks permissions; actually try to open it, because on a
+# machine without a controlling terminal (cron, CI, a pipe without a tty) the
+# open fails and the old form aborted the whole run with "No such device".
+elif { exec 0</dev/tty; } 2>/dev/null; then
   CAN_ASK=1
 fi
 if [ "$CAN_ASK" -eq 0 ]; then
