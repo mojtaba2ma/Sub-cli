@@ -408,6 +408,9 @@ if [ -f "$SRC_DIR/scripts/test-on-server.sh" ]; then
   install -m 0755 "$SRC_DIR/scripts/test-on-server.sh" "$PREFIX/test-on-server.sh"
   ok "installed the end-to-end ECH test: ${PREFIX}/test-on-server.sh"
 fi
+if [ -f "$SRC_DIR/scripts/update.sh" ]; then
+  install -m 0755 "$SRC_DIR/scripts/update.sh" "$PREFIX/update.sh"
+fi
 
 if [ "$DO_SYSTEMD" -eq 1 ]; then
   systemctl daemon-reload
