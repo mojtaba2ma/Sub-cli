@@ -43,20 +43,56 @@ curl -fsSL https://raw.githubusercontent.com/mojtaba2ma/Sub-cli/main/scripts/ins
 1. خودش پنل را روی `127.0.0.1:2096` پیدا می‌کند و مسیر ساب را می‌پرسد (`/sub` پیش‌فرض؛ در پنل: Settings → Subscription → subPath)
 2. یک **secret تصادفی** می‌سازد و در پایان نشان می‌دهد (ذخیره کنید!)
 3. باینری Go را می‌سازد/نصب می‌کند (اگر Go نبود، خودش toolchain را دانلود می‌کند) + سرویس systemd
-4. به nginx اضافه می‌کند (اگر `nginx -t` خطا بدهد، خودش تغییر را برمی‌گرداند)
+4. **به nginx دست نمی‌زند** (پنل nginx شما دست‌نخورده می‌ماند): بلوک آمادهٔ `location /sb/` را
+   چاپ می‌کند و در فایل `<prefix>/nginx-location.conf` هم ذخیره می‌کند تا خودتان آن را در
+   server block دامنهٔ پنل بگذارید
 5. health check می‌زند و آدرس‌های آمادهٔ ساب را چاپ می‌کند
 
 گزینه‌های نصاب:
 
 ```bash
 sudo bash install.sh --panel http://127.0.0.1:2096 --sub-path /sub --domain panel.example.com
-#   --no-nginx   --no-systemd   --port 2199   --bin-source auto|build|release|local   --yes   --uninstall
+#   --no-systemd   --port 2199   --bin-source auto|build|release|local   --yes   --uninstall
+#   --auto-nginx   (اختیاری و پیش‌فرض خاموش: اگر خودتان بخواهید، nginx را خودکار ویرایش می‌کند)
 ```
+
+### یک قدم دستی: nginx
+
+نصاب **هیچ تغییری در nginx نمی‌دهد**. در پایان، متن آماده را چاپ می‌کند؛ کافی است همان را داخل
+`server { ... }` که دامنهٔ پنل را با `listen 443 ssl` سرو می‌کند (کنار locationهای موجودتان) بگذارید:
+
+```nginx
+location /sb/ {
+    proxy_pass http://127.0.0.1:2199;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 30s;
+    proxy_buffering off;
+    add_header Cache-Control "no-store" always;
+}
+```
+
+سپس:
+
+```bash
+nginx -t && systemctl reload nginx
+```
+
+همین بلوک در `<prefix>/nginx-location.conf` ذخیره شده، پس می‌توانید به‌جای کپی‌کردن فقط این خط را اضافه کنید:
+
+```nginx
+include /opt/sb-ech-gateway/nginx-location.conf;
+```
+
+> پورت `2199` فقط روی `127.0.0.1` گوش می‌دهد؛ از بیرون فقط از طریق همان دامنه و مسیر `/sb/` قابل دسترسی است.
 
 بعد از نصب:
 
 ```bash
-sb-ech url        # آدرس‌ها + secret
+sb-ech url        # آدرس‌ها + secret (در <prefix>/urls.txt هم ذخیره می‌شود)
 sb-ech health     # وضعیت ECH و زمان آخرین دریافت کلید
 sb-ech logs       # لاگ سرویس
 sb-ech edit       # ویرایش config.json و ریستارت
@@ -163,6 +199,7 @@ PASS: tunnel works and traffic exits from your node (203.0.113.7).
 
 * `secret` تصادفی ۳۲ کاراکتری، فقط با آن به گیتوی دسترسی هست (secret غلط → 404).
 * گیتوی فقط روی `127.0.0.1` گوش می‌دهد؛ سرویس systemd با محدودیت‌های امنیتی اجرا می‌شود.
+* نصاب هیچ فایل nginx را تغییر نمی‌دهد (مگر با `--auto-nginx` که پیش‌فرض خاموش است).
 * `config.json` با مجوز 600 ذخیره می‌شود؛ در لاگ‌ها `subid` ماسک می‌شود.
 * برای تست، از یک کلاینت/SUBID موقت استفاده کنید و بعد پاکش کنید.
 

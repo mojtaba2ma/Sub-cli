@@ -17,7 +17,7 @@ PANEL_BASE=""
 SUB_PATH="/sub"
 PANEL_UA="v2rayNG/1.9.44"
 PUBLIC_DOMAIN=""
-DO_NGINX=1
+AUTO_NGINX=0     # 0 = only print the nginx block (never touch your nginx)
 DO_SYSTEMD=1
 BIN_SOURCE="auto"          # auto | build | release | local
 ASSUME_YES=0
@@ -64,7 +64,8 @@ usage: sudo bash install.sh [options]
   --sub-path PATH     panel subscription path      (default: ${SUB_PATH})
   --panel-ua UA       user-agent used to fetch the panel sub (default: ${PANEL_UA})
   --domain NAME       public domain that fronts the panel (for nginx + printed links)
-  --no-nginx          do not touch nginx
+  --no-nginx          accepted for compatibility (nginx is never touched by default)
+  --auto-nginx        let the installer edit nginx automatically (off by default)
   --no-systemd        do not install/start the systemd service
   --bin-source SRC    auto|build|release|local     (default: auto)
   --yes               accept defaults, no questions
@@ -81,7 +82,8 @@ while [ $# -gt 0 ]; do
     --sub-path) SUB_PATH="$2"; shift 2 ;;
     --panel-ua) PANEL_UA="$2"; shift 2 ;;
     --domain) PUBLIC_DOMAIN="$2"; shift 2 ;;
-    --no-nginx) DO_NGINX=0; shift ;;
+    --no-nginx) shift ;;                  # default behaviour, kept for compatibility
+    --auto-nginx) AUTO_NGINX=1; shift ;;
     --no-systemd) DO_SYSTEMD=0; shift ;;
     --bin-source) BIN_SOURCE="$2"; shift 2 ;;
     --yes|-y) ASSUME_YES=1; shift ;;
@@ -206,10 +208,9 @@ fi
 
 # ---- 2. public address ---------------------------------------------------------
 say "step 2/6 - public address"
-if [ "$DO_NGINX" -eq 1 ] && [ "$ASSUME_YES" -ne 1 ]; then
-  note "the gateway is published through nginx, next to your panel subscription."
-  ask PUBLIC_DOMAIN "public domain of your panel (leave empty to skip nginx)" "$PUBLIC_DOMAIN"
-  [ -z "$PUBLIC_DOMAIN" ] && DO_NGINX=0
+if [ "$ASSUME_YES" -ne 1 ]; then
+  note "your nginx is never modified by this installer - a ready-made block is printed at the end."
+  ask PUBLIC_DOMAIN "public domain of your panel (used only to print your final URLs, optional)" "$PUBLIC_DOMAIN"
 fi
 
 # ---- 3. secret -----------------------------------------------------------------
@@ -245,7 +246,9 @@ build_with_go() {
     cache="$(mktemp -d "${TMPDIR:-/tmp}/sb-ech-build.XXXXXX")"
   fi
   mkdir -p "$cache"
-  ( cd "$SRC_DIR" && GOCACHE="$cache/cache" GOPATH="$cache/gopath" "$gobin" build -trimpath -ldflags "-s -w" -o "$BIN" . )
+  # keep both the module cache and go's scratch space out of a possibly tiny /tmp
+  ( cd "$SRC_DIR" && TMPDIR="$cache" GOCACHE="$cache/cache" GOPATH="$cache/gopath" \
+      "$gobin" build -trimpath -ldflags "-s -w" -o "$BIN" . )
   local rc=$?
   case "$cache" in "$PREFIX/.gocache") : ;; *) rm -rf "$cache" ;; esac
   [ $rc -eq 0 ] || return 1
@@ -387,8 +390,12 @@ case "${1:-url}" in
   url|urls)
     SECRET="$(grep -o '"secret"[^,]*' "$CONF" | cut -d'"' -f4)"
     PORT="$(grep -o '"port"[^,]*' "$CONF" | cut -d: -f2 | tr -d ' ,')"
-    echo "local:  http://127.0.0.1:${PORT}/sb/${SECRET}/auto/<SUBID>"
-    echo "secret: ${SECRET}"
+    if [ -f "$PREFIX/urls.txt" ]; then
+      cat "$PREFIX/urls.txt"
+    else
+      echo "local:  http://127.0.0.1:${PORT}/sb/${SECRET}/auto/<SUBID>"
+      echo "secret: ${SECRET}"
+    fi
     ;;
   secret) grep -o '"secret"[^,]*' "$CONF" | cut -d'"' -f4 ;;
   status) systemctl --no-pager -l status sb-ech-gateway | head -20 ;;
@@ -436,109 +443,94 @@ else
   note "the gateway still works if ECH lookup fails later - check: sb-ech health"
 fi
 
-# ---- 6. nginx ------------------------------------------------------------------
-say "step 6/6 - nginx"
-NGINX_CONF_FILE="/etc/nginx/conf.d/sb-ech-gateway.conf"
-NGINX_HTTP=0
-if [ "$DO_NGINX" -eq 1 ] && command -v nginx >/dev/null 2>&1; then
-  SERVER_NAME="${PUBLIC_DOMAIN:-_}"
-  cat > "$NGINX_CONF_FILE" <<EOF
-# sb-ech-gateway: sing-box / mihomo subscriptions with live ECH
-server {
-    listen 80;
-    listen [::]:80;
-    server_name ${SERVER_NAME};
+# ---- 6. nginx (manual by design) ------------------------------------------------
+say "step 6/6 - nginx (manual step: nothing is changed automatically)"
 
-    location /sb/ {
-        proxy_pass http://127.0.0.1:${PORT};
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_read_timeout 30s;
-        proxy_buffering off;
-        add_header Cache-Control "no-store" always;
-    }
-}
-EOF
-  NGINX_HTTP=1
-  ok "wrote $NGINX_CONF_FILE (plain HTTP on port 80)"
-
-  # try to include it into the HTTPS (443) server block of the panel domain
-  if [ -n "$PUBLIC_DOMAIN" ]; then
-    mapfile -t CANDIDATES < <(grep -rl "server_name.*${PUBLIC_DOMAIN}" /etc/nginx 2>/dev/null || true)
-    TARGET=""
-    for f in "${CANDIDATES[@]:-}"; do
-      [ -z "$f" ] && continue
-      if grep -q "listen.*443" "$f"; then TARGET="$f"; fi
-    done
-    if [ -n "$TARGET" ]; then
-      if grep -q "sb-ech-gateway" "$TARGET"; then
-        ok "nginx already includes the gateway in $TARGET"
-      else
-        BACKUP="$TARGET.sb-ech-backup.$(date +%s)"
-        cp "$TARGET" "$BACKUP"
-        SNIPPET_FILE="/etc/nginx/snippets/sb-ech-gateway-location.conf"
-        mkdir -p /etc/nginx/snippets
-        cat > "$SNIPPET_FILE" <<EOF
+NGINX_BLOCK="$PREFIX/nginx-location.conf"
+{
+  echo "# sb-ech-gateway: sing-box / mihomo subscriptions with live ECH"
+  echo "# Paste this inside the server block that serves your panel domain (the one with"
+  echo "# 'listen 443 ssl'), next to your existing location blocks."
+  echo "# Then: nginx -t && systemctl reload nginx"
+  cat <<'LOC'
 location /sb/ {
-    proxy_pass http://127.0.0.1:${PORT};
+    proxy_pass http://127.0.0.1:__PORT__;
     proxy_http_version 1.1;
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
-    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto \$scheme;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
     proxy_read_timeout 30s;
     proxy_buffering off;
     add_header Cache-Control "no-store" always;
 }
-EOF
-        awk -v inc="$SNIPPET_FILE" '
-          { print }
-          /server[ \t]*\{/ && !done { depth=1; print "    include " inc ";"; done=1 }
-        ' "$TARGET" > "$TARGET.new" && mv "$TARGET.new" "$TARGET"
-        if nginx -t >/dev/null 2>&1; then
-          systemctl is-active --quiet nginx 2>/dev/null && systemctl reload nginx || systemctl start nginx >/dev/null 2>&1 || true
-          ok "nginx includes the gateway in $TARGET (reloaded)"
-          NGINX_SNIPPET="$SNIPPET_FILE"
-        else
-          cp "$BACKUP" "$TARGET"
-          warn "nginx config test failed - restored $TARGET from backup"
-          note "add this include manually inside your 443 server block:  include ${SNIPPET_FILE};"
-        fi
-      fi
-    else
-      warn "could not find your HTTPS server block for '${PUBLIC_DOMAIN}' in /etc/nginx"
-      note "add this line manually inside the 443 server block of your panel domain:"
-      printf '%s\n' "        include ${NGINX_HTTP:+}"
-      note "location /sb/ { proxy_pass http://127.0.0.1:${PORT}; proxy_set_header Host \$host; }"
-    fi
-  fi
+LOC
+} > "$NGINX_BLOCK"
+sed -i "s|__PORT__|${PORT}|" "$NGINX_BLOCK"
+ok "saved the ready-made block to ${NGINX_BLOCK}"
 
-  if nginx -t >/dev/null 2>&1; then
-    if systemctl is-active --quiet nginx 2>/dev/null; then
-      systemctl reload nginx 2>/dev/null && ok "nginx reloaded"
-    else
-      systemctl start nginx >/dev/null 2>&1 && ok "nginx started" || warn "nginx is not running - start it manually: systemctl start nginx"
+if [ "$AUTO_NGINX" -eq 1 ] && command -v nginx >/dev/null 2>&1; then
+  warn "--auto-nginx given: editing nginx automatically (off by default)"
+  NGINX_CONF_FILE="/etc/nginx/conf.d/sb-ech-gateway.conf"
+  SERVER_NAME="${PUBLIC_DOMAIN:-_}"
+  {
+    echo "server {"
+    echo "    listen 80;"
+    echo "    listen [::]:80;"
+    echo "    server_name ${SERVER_NAME};"
+    sed 's/^/    /' "$NGINX_BLOCK" | grep -v '^    #'
+    echo "}"
+  } > "$NGINX_CONF_FILE"
+  ok "wrote $NGINX_CONF_FILE"
+  if [ -n "$PUBLIC_DOMAIN" ]; then
+    TARGET=""
+    for f in $(grep -rl "server_name.*${PUBLIC_DOMAIN}" /etc/nginx 2>/dev/null || true); do
+      grep -q "listen.*443" "$f" && TARGET="$f"
+    done
+    if [ -n "$TARGET" ] && ! grep -q "sb-ech-gateway" "$TARGET"; then
+      BACKUP="$TARGET.sb-ech-backup.$(date +%s)"
+      cp "$TARGET" "$BACKUP"
+      SNIPPET_FILE="/etc/nginx/snippets/sb-ech-gateway-location.conf"
+      mkdir -p /etc/nginx/snippets
+      grep -v '^#' "$NGINX_BLOCK" > "$SNIPPET_FILE"
+      awk -v inc="$SNIPPET_FILE" '{ print } /server[ \t]*\{/ && !done { print "    include " inc ";"; done=1 }' "$TARGET" > "$TARGET.new" && mv "$TARGET.new" "$TARGET"
+      if nginx -t >/dev/null 2>&1; then
+        NGINX_SNIPPET="$SNIPPET_FILE"
+        systemctl is-active --quiet nginx 2>/dev/null && systemctl reload nginx || systemctl start nginx >/dev/null 2>&1 || true
+        ok "nginx now includes the gateway in $TARGET"
+      else
+        cp "$BACKUP" "$TARGET"
+        warn "nginx -t failed - restored $TARGET from backup"
+      fi
     fi
-  else
-    warn "nginx -t reports an error - check: nginx -t"
   fi
 else
-  if [ "$DO_NGINX" -eq 1 ]; then
-    warn "nginx was not found on this server"
-  else
-    note "nginx step skipped"
-  fi
-  note "the gateway itself only listens on 127.0.0.1:${PORT}"
+  note "your nginx config was NOT touched (by design)."
 fi
 
 # ---- summary --------------------------------------------------------------------
 SCHEME="https"; PORT_PART=""
-if [ "$NGINX_HTTP" -eq 1 ] && [ -z "$PUBLIC_DOMAIN" ]; then SCHEME="http"; fi
-HOST="${PUBLIC_DOMAIN:-$(hostname -f 2>/dev/null || hostname)}"
-BASE="${SCHEME}://${HOST}/sb/${CREATED_SECRET}"
+if [ -n "$PUBLIC_DOMAIN" ]; then
+  HOST="$PUBLIC_DOMAIN"
+else
+  HOST="$(hostname -f 2>/dev/null || hostname)"; SCHEME="http"; PORT_PART=":${PORT}"
+fi
+BASE="${SCHEME}://${HOST}${PORT_PART}/sb/${CREATED_SECRET}"
+LOCAL_BASE="http://127.0.0.1:${PORT}/sb/${CREATED_SECRET}"
+
+cat > "$PREFIX/urls.txt" <<EOF
+secret: ${CREATED_SECRET}
+public URLs (use them after you add the nginx block):
+  ${BASE}/auto/<SUBID>
+  ${BASE}/sub/<SUBID>
+  ${BASE}/subs/<SUBID>
+  ${BASE}/clash/<SUBID>
+  ${BASE}/xray/<SUBID>
+  ${BASE}/health
+local URL (always works on the server):
+  ${LOCAL_BASE}/health
+EOF
+chmod 600 "$PREFIX/urls.txt"
 
 echo
 printf '%s\n' "${C_G}===============================================================${C_R}"
@@ -554,15 +546,39 @@ printf '%s\n' "      ${BASE}/sub/<SUBID>      ${C_D}<- sing-box, live ECH from D
 printf '%s\n' "      ${BASE}/subs/<SUBID>     ${C_D}<- sing-box, static ECH (Hiddify)${C_R}"
 printf '%s\n' "      ${BASE}/clash/<SUBID>    ${C_D}<- Clash / Mihomo${C_R}"
 printf '%s\n' "      ${BASE}/xray/<SUBID>     ${C_D}<- raw panel links (v2rayNG & co)${C_R}"
+if [ -z "$PUBLIC_DOMAIN" ]; then
+  note "no domain was given: the URLs above use the server hostname - fix them after adding nginx"
+fi
+echo
+printf '%s\n' "  ${C_B}---------------------------------------------------------------${C_R}"
+printf '%s\n' "  ${C_B}NGINX - ONE MANUAL STEP   (your nginx was NOT touched)${C_R}"
+printf '%s\n' "  ${C_B}---------------------------------------------------------------${C_R}"
+echo
+printf '%s\n' "  Add this block inside the ${C_B}server { ... }${C_R} block that serves your panel"
+printf '%s\n' "  domain - the one with ${C_B}listen 443 ssl${C_R} - next to your existing locations:"
+echo
+sed 's/^/      /' "$NGINX_BLOCK"
+echo
+printf '%s\n' "  ${C_Y}How:${C_R}"
+printf '%s\n' "   1. open that file, for example:   ${C_B}nano /etc/nginx/conf.d/your-panel.conf${C_R}"
+printf '%s\n' "   2. paste the block above inside its server block, or just add:"
+printf '%s\n' "          ${C_B}include ${NGINX_BLOCK};${C_R}   (the block is already saved in this file)"
+printf '%s\n' "   3. test and reload:   ${C_B}nginx -t && systemctl reload nginx${C_R}"
+printf '%s\n' "   4. verify on the server:  ${C_B}curl -s ${LOCAL_BASE}/health${C_R}"
+printf '%s\n' "      and from outside:       ${C_B}curl -s ${BASE}/health${C_R}"
+echo
+printf '%s\n' "  ${C_D}نکته: اگر دامنهٔ پنل پشت کلودفلر است مشکلی نیست؛ ساب‌ها مثل ساب خود پنل از${C_R}"
+printf '%s\n' "  ${C_D}روی CDN خوانده می‌شوند. پورت ${PORT} فقط روی 127.0.0.1 گوش می‌دهد.${C_R}"
 echo
 printf '%s\n' "  ${C_B}Useful commands${C_R}:"
-printf '%s\n' "      sb-ech url        show URLs and the secret"
+printf '%s\n' "      sb-ech url        show URLs and the secret (saved in ${PREFIX}/urls.txt)"
 printf '%s\n' "      sb-ech health     ECH status + last key fetch time"
 printf '%s\n' "      sb-ech logs       service logs"
 printf '%s\n' "      sb-ech edit       edit config.json and restart"
 echo
 printf '%s\n' "  ${C_Y}Next${C_R}:"
-printf '%s\n' "   1. paste one URL above into your sing-box client (sing-box, Hiddify, NekoBox, Karing...)"
-printf '%s\n' "   2. test the tunnel:  ${PREFIX}/test-on-server.sh --sub '<panel sub url>'"
-printf '%s\n' "   3. Xray users (v2rayNG, Happ) can keep using the panel's own subscription - nothing changed"
+printf '%s\n' "   1. add the nginx block (step above)"
+printf '%s\n' "   2. paste one URL into your sing-box client (sing-box, Hiddify, NekoBox, Karing...)"
+printf '%s\n' "   3. test the tunnel: ${PREFIX}/test-on-server.sh --sub '<panel sub url>'"
+printf '%s\n' "   4. Xray users (v2rayNG, Happ) keep using the panel's own subscription - nothing changed"
 echo

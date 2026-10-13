@@ -41,11 +41,35 @@ The installer:
 1. detects your panel (`http://127.0.0.1:2096`) and asks for its subscription path,
 2. generates a random **secret** and shows it at the end (save it!),
 3. builds/installs the Go binary (no runtime dependencies) and a hardened systemd unit,
-4. adds the `/sb/` location to nginx (and rolls back automatically if `nginx -t` fails),
+4. prints a ready-made `location /sb/` block for nginx and saves it to `<prefix>/nginx-location.conf`
+   — **it never edits your nginx config** (use `--auto-nginx` if you explicitly want that),
 5. runs an ECH health check and prints ready-to-use subscription URLs.
 
 Interactive flags: `--panel URL`, `--sub-path /sub`, `--domain panel.example.com`, `--port 2199`,
-`--no-nginx`, `--no-systemd`, `--bin-source auto|build|release|local`, `--yes`, `--uninstall`.
+`--no-systemd`, `--bin-source auto|build|release|local`, `--yes`, `--uninstall`,
+and the opt-in `--auto-nginx` (off by default).
+
+### The one manual step: nginx
+
+Paste the block the installer prints (also saved at `<prefix>/nginx-location.conf`) inside the
+`server { ... }` block that serves your panel domain with `listen 443 ssl`:
+
+```nginx
+location /sb/ {
+    proxy_pass http://127.0.0.1:2199;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 30s;
+    proxy_buffering off;
+    add_header Cache-Control "no-store" always;
+}
+```
+
+then `nginx -t && systemctl reload nginx`. Alternatively just add
+`include /opt/sb-ech-gateway/nginx-location.conf;` to that server block — the file already holds the block.
 
 ## What the client gets
 
