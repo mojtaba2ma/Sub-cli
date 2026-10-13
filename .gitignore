@@ -15,3 +15,6 @@ gopath/
 
 # publishing helper (never pushed)
 push.sh
+
+# needs the "workflows" token scope; published as contrib/release-workflow.yml
+.github/workflows/
