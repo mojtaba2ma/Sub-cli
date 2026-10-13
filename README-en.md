@@ -33,7 +33,7 @@ YAML profile) with the correct ECH block.
 ## Quick start (server-side, one command)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/sb-ech-gateway/main/scripts/install-remote.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/mojtaba2ma/Sub-cli/main/scripts/install-remote.sh | sudo bash
 ```
 
 The installer:
@@ -88,7 +88,7 @@ Raw logs: [`evidence/ech-tests.log`](evidence/ech-tests.log).
 ## Install from source (for developers)
 
 ```bash
-git clone https://github.com/OWNER/sb-ech-gateway && cd sb-ech-gateway
+git clone https://github.com/mojtaba2ma/Sub-cli && cd sb-ech-gateway
 make build            # -> ./sb-ech-gateway  (pure Go, stdlib only)
 ./sb-ech-gateway --selftest      # writes samples/profile-{dynamic,static}.json + mihomo yaml
 sudo bash install.sh             # interactive installer

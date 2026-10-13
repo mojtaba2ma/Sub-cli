@@ -35,7 +35,7 @@ cloudflare-ech.com+https://8.8.8.8/dns-query
 ## ۲) نصب (روی سرور، با یک دستور)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/sb-ech-gateway/main/scripts/install-remote.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/mojtaba2ma/Sub-cli/main/scripts/install-remote.sh | sudo bash
 ```
 
 نصاب تعاملی:

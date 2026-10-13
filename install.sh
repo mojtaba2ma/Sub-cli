@@ -9,7 +9,7 @@
 set -uo pipefail
 
 VERSION="2.0.0"
-GITHUB_REPO="${SB_ECH_REPO:-OWNER/sb-ech-gateway}"   # replaced with the real repo
+GITHUB_REPO="${SB_ECH_REPO:-mojtaba2ma/Sub-cli}"   # replaced with the real repo
 
 PREFIX="/opt/sb-ech-gateway"
 PORT="2199"

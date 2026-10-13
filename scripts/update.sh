@@ -5,7 +5,7 @@
 # =============================================================================
 set -euo pipefail
 
-REPO="${SB_ECH_REPO:-OWNER/sb-ech-gateway}"
+REPO="${SB_ECH_REPO:-mojtaba2ma/Sub-cli}"
 BRANCH="${SB_ECH_BRANCH:-main}"
 PREFIX="/opt/sb-ech-gateway"
 SERVICE="sb-ech-gateway"

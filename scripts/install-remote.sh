@@ -3,14 +3,14 @@
 #  one-line remote installer
 #
 #  usage (on the server):
-#     curl -fsSL https://raw.githubusercontent.com/OWNER/sb-ech-gateway/main/scripts/install-remote.sh | sudo bash
+#     curl -fsSL https://raw.githubusercontent.com/mojtaba2ma/Sub-cli/main/scripts/install-remote.sh | sudo bash
 #
 #  pass installer flags after `-s --`, for example:
 #     curl -fsSL .../install-remote.sh | sudo bash -s -- --domain panel.example.com --yes
 # =============================================================================
 set -euo pipefail
 
-REPO="${SB_ECH_REPO:-OWNER/sb-ech-gateway}"
+REPO="${SB_ECH_REPO:-mojtaba2ma/Sub-cli}"
 BRANCH="${SB_ECH_BRANCH:-main}"
 
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
