@@ -12,3 +12,6 @@ config.json
 # go
 .gocache/
 gopath/
+
+# publishing helper (never pushed)
+push.sh
