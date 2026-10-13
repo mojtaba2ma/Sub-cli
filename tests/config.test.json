@@ -1,0 +1,8 @@
+{
+  "listen": "127.0.0.1",
+  "port": 2299,
+  "base_path": "/sb",
+  "secret": "test-secret-abc123",
+  "panel": {"sub_url": "http://127.0.0.1:2096/sub/{subid}", "user_agent": "v2rayNG/1.9.44"},
+  "response": {"profile_update_interval_hours": 6}
+}

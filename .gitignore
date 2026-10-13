@@ -1,0 +1,14 @@
+# build artifacts
+/sb-ech-gateway
+/sb-ech-gateway-*
+*.exe
+
+# local test data
+/tests/fake_panel.pyc
+/samples/*.tmp
+config.json
+*.log
+
+# go
+.gocache/
+gopath/

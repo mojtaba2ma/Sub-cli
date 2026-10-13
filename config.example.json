@@ -1,0 +1,42 @@
+{
+  "listen": "127.0.0.1",
+  "port": 2199,
+  "base_path": "/sb",
+
+  "secret": "PUT-A-LONG-RANDOM-STRING-HERE",
+
+  "panel": {
+    "sub_url": "http://127.0.0.1:2096/sub/{subid}",
+    "user_agent": "v2rayNG/1.9.44",
+    "timeout_seconds": 15,
+    "insecure_tls": false,
+    "host_header": ""
+  },
+
+  "ech": {
+    "enabled": true,
+    "domain": "cloudflare-ech.com",
+    "resolvers": ["https://8.8.8.8/dns-query", "https://1.1.1.1/dns-query"],
+    "mode": "all",
+    "domains": ["your-cdn-domain.example"],
+    "cache_seconds": 300,
+    "static_endpoint": true
+  },
+
+  "profile": {
+    "log_level": "warn",
+    "dns_direct": ["8.8.8.8", "1.1.1.1"],
+    "dns_ech": "1.1.1.1",
+    "strategy": "prefer_ipv4",
+    "fingerprint": "chrome",
+    "include_tun": true,
+    "mixed_port": 2080,
+    "urltest_url": "http://cp.cloudflare.com/generate_204",
+    "urltest_interval": "3m"
+  },
+
+  "response": {
+    "profile_update_interval_hours": 6,
+    "profile_title": ""
+  }
+}
